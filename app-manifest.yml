@@ -1,0 +1,314 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mtls-on-eks
+  labels:
+    mesh: mtls-on-eks
+    appmesh.k8s.aws/sidecarInjectorWebhook: enabled
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: Mesh
+metadata:
+  name: mtls-on-eks
+spec:
+  namespaceSelector:
+    matchLabels:
+      mesh: mtls-on-eks
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: front
+  namespace: mtls-on-eks
+spec:
+  podSelector:
+    matchLabels:
+      app: front
+  listeners:
+    - portMapping:
+        port: 8080
+        protocol: http
+      healthCheck:
+        protocol: http
+        path: '/ping'
+        healthyThreshold: 2
+        unhealthyThreshold: 2
+        timeoutMillis: 2000
+        intervalMillis: 5000
+  backends:
+    - virtualService:
+        virtualServiceRef:
+          name: color
+  backendDefaults:
+    clientPolicy:
+      tls:
+        enforce: true
+        mode: STRICT
+        certificate:
+          sds:
+            secretName: spiffe://example.org/front
+        validation:
+          trust:
+            sds:
+              secretName: spiffe://example.org
+          subjectAlternativeNames:
+            match:
+              exact:
+              - spiffe://example.org/colorblue
+              - spiffe://example.org/colorred
+  serviceDiscovery:
+    dns:
+      hostname: front.mtls-on-eks.svc.cluster.local
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: blue
+  namespace: mtls-on-eks
+spec:
+  podSelector:
+    matchLabels:
+      app: color
+      version: blue
+  listeners:
+    - portMapping:
+        port: 8080
+        protocol: http
+      healthCheck:
+        protocol: http
+        path: '/ping'
+        healthyThreshold: 2
+        unhealthyThreshold: 2
+        timeoutMillis: 2000
+        intervalMillis: 5000
+      tls:
+        mode: STRICT
+        certificate:
+          sds:
+            secretName: spiffe://example.org/colorblue
+        validation:
+          trust:
+            sds:
+              secretName: spiffe://example.org
+          subjectAlternativeNames:
+            match:
+              exact:
+              - spiffe://example.org/front
+  serviceDiscovery:
+    dns:
+      hostname: color-blue.mtls-on-eks.svc.cluster.local
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: red
+  namespace: mtls-on-eks
+spec:
+  podSelector:
+    matchLabels:
+      app: color
+      version: red
+  listeners:
+    - portMapping:
+        port: 8080
+        protocol: http
+      healthCheck:
+        protocol: http
+        path: '/ping'
+        healthyThreshold: 2
+        unhealthyThreshold: 2
+        timeoutMillis: 2000
+        intervalMillis: 5000
+      tls:
+        mode: STRICT
+        certificate:
+          sds:
+            secretName: spiffe://example.org/colorred
+        validation:
+          trust:
+            sds:
+              secretName: spiffe://example.org
+          subjectAlternativeNames:
+            match:
+              exact:
+              - spiffe://example.org/front
+  serviceDiscovery:
+    dns:
+      hostname: color-red.mtls-on-eks.svc.cluster.local
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualService
+metadata:
+  name: color
+  namespace: mtls-on-eks
+spec:
+  awsName: color.mtls-on-eks.svc.cluster.local
+  provider:
+    virtualRouter:
+      virtualRouterRef:
+        name: color
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualRouter
+metadata:
+  namespace: mtls-on-eks
+  name: color
+spec:
+  listeners:
+    - portMapping:
+        port: 8080
+        protocol: http
+  routes:
+    - name: color-route-blue
+      priority: 10
+      httpRoute:
+        match:
+          prefix: /
+          headers:
+            - name: color_header
+              match:
+                exact: blue
+        action:
+          weightedTargets:
+            - virtualNodeRef:
+                name: blue
+              weight: 1
+    - name: color-route-red
+      priority: 30
+      httpRoute:
+        match:
+          prefix: /
+          headers:
+            - name: color_header
+              match:
+                exact: red
+        action:
+          weightedTargets:
+            - virtualNodeRef:
+                name: red
+              weight: 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: front
+  namespace: mtls-on-eks
+spec:
+  ports:
+    - port: 8080
+      name: http
+  selector:
+    app: front
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: front
+  namespace: mtls-on-eks
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: front
+  template:
+    metadata:
+      labels:
+        app: front
+    spec:
+      containers:
+        - name: app
+          image: 600432944642.dkr.ecr.ap-northeast-1.amazonaws.com/mtls-on-eks/feapp
+          ports:
+            - containerPort: 8080
+          env:
+            - name: "COLOR_HOST"
+              value: "color.mtls-on-eks.svc.cluster.local:8080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: color-blue
+  namespace: mtls-on-eks
+spec:
+  ports:
+    - port: 8080
+      name: http
+  selector:
+    app: color
+    version: blue
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blue
+  namespace: mtls-on-eks
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: color
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: color
+        version: blue
+    spec:
+      containers:
+        - name: app
+          image: 600432944642.dkr.ecr.ap-northeast-1.amazonaws.com/mtls-on-eks/colorapp
+          ports:
+            - containerPort: 8080
+          env:
+            - name: "COLOR"
+              value: "blue"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: color-red
+  namespace: mtls-on-eks
+spec:
+  ports:
+    - port: 8080
+      name: http
+  selector:
+    app: color
+    version: red
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: red
+  namespace: mtls-on-eks
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: color
+      version: red
+  template:
+    metadata:
+      labels:
+        app: color
+        version: red
+    spec:
+      containers:
+        - name: app
+          image: 600432944642.dkr.ecr.ap-northeast-1.amazonaws.com/mtls-on-eks/colorapp
+          ports:
+            - containerPort: 8080
+          env:
+            - name: "COLOR"
+              value: "red"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: color
+  namespace: mtls-on-eks
+spec:
+  ports:
+    - port: 8080
+      name: http
